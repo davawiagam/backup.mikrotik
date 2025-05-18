@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# Backup konfigurasi Mikrotik via SSH dan SCP menggunakan metode file .rsc
+# Author: ChatGPT Adaptasi dari permintaan user
+# Date: 2025-05-18
+
+declare -A routers=(
+  ["router1"]="192.168.56.1:8001"
+  ["router2"]="192.168.56.1:8002"
+  ["router3"]="192.168.56.1:8003"
+)
+
+userName="admin"                      # Username login MikroTik
+backupPath="./backup_files"           # Folder lokal untuk menyimpan file .rsc
+getDate=$(date +%Y%m%d)               # Tanggal backup
+
+mkdir -p "$backupPath"
+
+for routerName in "${!routers[@]}"; do
+  address=${routers[$routerName]}
+  ip=$(echo $address | cut -d':' -f1)
+  port=$(echo $address | cut -d':' -f2)
+
+  echo "========================================"
+  echo "📦 Starting backup: $routerName ($ip:$port)"
+  echo "========================================"
+
+  # Ambil system identity dari router
+  getRouterID=$(ssh -p $port $userName@$ip 'system identity print' 2>/dev/null)
+  getRealRouterID=$(echo "$getRouterID" | grep "name:" | awk '{print $2}')
+
+  if [[ -z "$getRealRouterID" ]]; then
+    getRealRouterID=$routerName
+  fi
+
+  backupName="backup_${getRealRouterID}_${getDate}"
+  cmdFile="cmd_${backupName}.rsc"
+
+  # Buat file perintah export di lokal
+  echo "/export file=${backupName}" > $cmdFile
+
+  echo "➡️ Uploading export command file: $cmdFile"
+  scp -P $port $cmdFile $userName@$ip: 2>/dev/null
+  if [ $? -ne 0 ]; then
+    echo "❌ Gagal upload file perintah ke $ip:$port"
+    continue
+  fi
+
+  echo "➡️ Running export command on router"
+  ssh -p $port $userName@$ip "/import file=$cmdFile" 2>/dev/null
+  if [ $? -ne 0 ]; then
+    echo "❌ Gagal menjalankan export command di $ip:$port"
+    continue
+  fi
+
+  sleep 3
+
+  echo "⬇️ Downloading backup file: ${backupName}.rsc"
+  scp -P $port $userName@$ip:/${backupName}.rsc "$backupPath" 2>/dev/null
+  if [ $? -ne 0 ]; then
+    echo "❌ Gagal mengunduh backup dari $ip:$port"
+    continue
+  fi
+
+  echo "🗑️ Removing remote files"
+  ssh -p $port $userName@$ip "file remove $cmdFile" 2>/dev/null
+  ssh -p $port $userName@$ip "file remove ${backupName}.rsc" 2>/dev/null
+
+  echo "✅ Backup selesai untuk $routerName ($ip:$port)"
+done
+
+echo "========================================"
+echo "🎉 Semua backup selesai!"
+echo "🗂️ Cek folder backup di: $backupPath"
